@@ -304,6 +304,9 @@ def play():
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and not stream.isatty():
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     arguments = argparse.ArgumentParser(description=__doc__)
     arguments.add_argument("--update-only", action="store_true", help="Перевірити та оновити JAR без гри.")
     options = arguments.parse_args()
