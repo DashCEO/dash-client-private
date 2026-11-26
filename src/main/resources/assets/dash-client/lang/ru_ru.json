@@ -1,0 +1,23 @@
+{
+  "key.dash-client.freelook": "Свободный обзор (Freelook)",
+  "key.dash-client.trigger_bot": "Триггер-бот",
+  "key.dash-client.zoom": "Приближение (удерживать)",
+  "key.dash-client.swap-bind.1": "Свап по клавише 1",
+  "key.dash-client.swap-bind.2": "Свап по клавише 2",
+  "key.dash-client.swap-bind.3": "Свап по клавише 3",
+  "key.dash-client.swap-bind.4": "Свап по клавише 4",
+  "key.dash-client.swap-bind.5": "Свап по клавише 5",
+  "key.dash-client.swap-bind.6": "Свап по клавише 6",
+  "key.dash-client.swap-bind.7": "Свап по клавише 7",
+  "key.dash-client.swap-bind.8": "Свап по клавише 8",
+  "key.dash-client.consumable-bind.1": "Расходники по клавише 1",
+  "key.dash-client.consumable-bind.2": "Расходники по клавише 2",
+  "key.dash-client.consumable-bind.3": "Расходники по клавише 3",
+  "key.dash-client.consumable-bind.4": "Расходники по клавише 4",
+  "key.dash-client.consumable-bind.5": "Расходники по клавише 5",
+  "key.dash-client.consumable-bind.6": "Расходники по клавише 6",
+  "key.dash-client.consumable-bind.7": "Расходники по клавише 7",
+  "key.dash-client.consumable-bind.8": "Расходники по клавише 8",
+  "key.dash-client.marks": "Поставить ледяную метку",
+  "key.dash-client.aim-assist": "Переключить помощь с прицелом"
+}

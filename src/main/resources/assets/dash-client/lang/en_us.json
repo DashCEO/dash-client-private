@@ -1,0 +1,23 @@
+{
+  "key.dash-client.freelook": "Freelook",
+  "key.dash-client.trigger_bot": "Trigger Bot",
+  "key.dash-client.zoom": "Zoom (hold)",
+  "key.dash-client.swap-bind.1": "Swap Bind 1",
+  "key.dash-client.swap-bind.2": "Swap Bind 2",
+  "key.dash-client.swap-bind.3": "Swap Bind 3",
+  "key.dash-client.swap-bind.4": "Swap Bind 4",
+  "key.dash-client.swap-bind.5": "Swap Bind 5",
+  "key.dash-client.swap-bind.6": "Swap Bind 6",
+  "key.dash-client.swap-bind.7": "Swap Bind 7",
+  "key.dash-client.swap-bind.8": "Swap Bind 8",
+  "key.dash-client.consumable-bind.1": "Consumable Bind 1",
+  "key.dash-client.consumable-bind.2": "Consumable Bind 2",
+  "key.dash-client.consumable-bind.3": "Consumable Bind 3",
+  "key.dash-client.consumable-bind.4": "Consumable Bind 4",
+  "key.dash-client.consumable-bind.5": "Consumable Bind 5",
+  "key.dash-client.consumable-bind.6": "Consumable Bind 6",
+  "key.dash-client.consumable-bind.7": "Consumable Bind 7",
+  "key.dash-client.consumable-bind.8": "Consumable Bind 8",
+  "key.dash-client.marks": "Place Ice Mark",
+  "key.dash-client.aim-assist": "Toggle Aim Assist"
+}

@@ -1,0 +1,134 @@
+
+plugins {
+    id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+    id 'maven-publish'
+}
+
+repositories {
+    flatDir {
+        dirs 'libs'
+    }
+    mavenCentral()
+}
+
+loom {
+    splitEnvironmentSourceSets()
+
+    runs {
+        def baseClient = getByName('client')
+        create('rtxClient') {
+            inherit(baseClient)
+            runDir('run/rtx-profile')
+            vmArg '-Ddash.rtxFpsCap=840'
+        }
+        create('rtxSafeClient') {
+            inherit(baseClient)
+            runDir('run/rtx-profile')
+            ideConfigGenerated(false)
+            vmArg '-Dfabric.debug.disableModIds=vulkanmod'
+            vmArg '-Ddash.rtxFpsCap=840'
+            vmArg '-Ddash.rtxBorderless=true'
+            def sodium = providers.environmentVariable('DASH_SODIUM_JAR').orNull
+            if (sodium != null && file(sodium).isFile()) {
+                vmArg("-Dfabric.addMods=" + file(sodium).absolutePath)
+            }
+        }
+    }
+
+    mods {
+        "dash-client" {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    implementation "org.jcodec:jcodec:0.2.5"
+    implementation "org.jcodec:jcodec-javase:0.2.5"
+
+    include "org.jcodec:jcodec:0.2.5"
+    include "org.jcodec:jcodec-javase:0.2.5"
+
+    for (String module : ['netty-handler-proxy', 'netty-codec-socks']) {
+        implementation("io.netty:$module:4.2.7.Final") { transitive = false }
+        include("io.netty:$module:4.2.7.Final") { transitive = false }
+    }
+}
+
+processResources {
+    from('Animations') {
+        include 'Intro.mp4', 'Startup.mp4'
+        into 'com/dash/client/client'
+    }
+    inputs.property "version", project.version
+
+    filesMatching("fabric.mod.json") {
+        expand(version: project.version)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+def nicknameFile = providers.environmentVariable('DASH_NICKNAME_FILE')
+def nicknameSetup = providers.environmentVariable('DASH_NICKNAME_SETUP')
+def skipStartupIntro = providers.environmentVariable('DASH_SKIP_STARTUP')
+tasks.withType(JavaExec).configureEach {
+    if (name in ['runClient', 'runRtxClient', 'runRtxSafeClient']) {
+        if (nicknameFile.isPresent()) {
+            systemProperty 'dash.launcherNicknameFile', nicknameFile.get()
+            if (nicknameSetup.getOrElse('0') == '1') {
+                systemProperty 'dash.launcherNicknameSetup', 'true'
+            }
+        }
+        if (skipStartupIntro.getOrElse('0') == '1') {
+            systemProperty 'dash.skipStartupIntro', 'true'
+        }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+if (providers.gradleProperty('dashGameJava21').isPresent()) {
+    // Keep the build toolchain, but run Minecraft on LWJGL's supported Java 21.
+    def gameJava = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    tasks.withType(JavaExec).configureEach {
+        if (name in ['runClient', 'runRtxClient', 'runRtxSafeClient']) {
+            javaLauncher.set(gameJava)
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            artifactId = "dash-client"
+            from components.java
+        }
+    }
+
+    repositories {
+    }
+}

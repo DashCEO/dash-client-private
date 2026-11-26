@@ -1,0 +1,8 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.dash.client.ipconfig.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["JoinMultiplayerScreenMixin", "ConnectionMixin", "ServerStatusPingerMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

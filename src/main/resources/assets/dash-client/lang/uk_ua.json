@@ -1,0 +1,23 @@
+{
+  "key.dash-client.freelook": "Вільний огляд (Freelook)",
+  "key.dash-client.trigger_bot": "Тригер-бот",
+  "key.dash-client.zoom": "Наближення (утримувати)",
+  "key.dash-client.swap-bind.1": "Свап за клавішею 1",
+  "key.dash-client.swap-bind.2": "Свап за клавішею 2",
+  "key.dash-client.swap-bind.3": "Свап за клавішею 3",
+  "key.dash-client.swap-bind.4": "Свап за клавішею 4",
+  "key.dash-client.swap-bind.5": "Свап за клавішею 5",
+  "key.dash-client.swap-bind.6": "Свап за клавішею 6",
+  "key.dash-client.swap-bind.7": "Свап за клавішею 7",
+  "key.dash-client.swap-bind.8": "Свап за клавішею 8",
+  "key.dash-client.consumable-bind.1": "Витратники за клавішею 1",
+  "key.dash-client.consumable-bind.2": "Витратники за клавішею 2",
+  "key.dash-client.consumable-bind.3": "Витратники за клавішею 3",
+  "key.dash-client.consumable-bind.4": "Витратники за клавішею 4",
+  "key.dash-client.consumable-bind.5": "Витратники за клавішею 5",
+  "key.dash-client.consumable-bind.6": "Витратники за клавішею 6",
+  "key.dash-client.consumable-bind.7": "Витратники за клавішею 7",
+  "key.dash-client.consumable-bind.8": "Витратники за клавішею 8",
+  "key.dash-client.marks": "Поставити крижану мітку",
+  "key.dash-client.aim-assist": "Перемкнути допомогу з прицілом"
+}

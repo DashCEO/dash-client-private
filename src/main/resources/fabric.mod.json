@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "dash-client",
+  "version": "${version}",
+  "name": "Dash Client",
+  "description": "Dash Client",
+  "authors": [
+    "Me!"
+  ],
+  "contact": {
+    "homepage": "https://fabricmc.net/",
+    "sources": "https://github.com/fabricmc/fabric-example-mod"
+  },
+  "license": "CC0-1.0",
+  "icon": "assets/dash-client/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.dash.client.DashClient"
+    ],
+    "client": [
+      "com.dash.client.client.DashClientClient"
+    ]
+  },
+  "mixins": [
+    {
+      "config": "dash-client.mixins.json",
+      "environment": "client"
+    },
+    {
+      "config": "dash-ip-config.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
