@@ -1,15 +1,20 @@
+import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 from store import ADMIN_ID, Store, StoreError
+
+TEST_PROMOS = ("DemoOne", "DemoTwo", "DemoThree")
 
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.path = Path(self.temporary.name) / "state.sqlite3"
-        self.store = Store(self.path)
+        self.store = Store(self.path, promo_codes=TEST_PROMOS)
         self.store.accept_terms(123)
 
     def tearDown(self):
@@ -43,12 +48,12 @@ class StoreTests(unittest.TestCase):
 
     def test_promo_is_case_insensitive_and_survives_restart(self):
         old = self.store.order_for(123, 123, now=100)
-        self.assertEqual("Chrome", self.store.set_promo(123, " cHrOmE "))
+        self.assertEqual("DemoOne", self.store.set_promo(123, " dEmOoNe "))
         self.store.set_waiting_promo(123)
         self.store.set_offset(900)
         self.store.close()
-        self.store = Store(self.path)
-        self.assertEqual("Chrome", self.store.get_promo(123))
+        self.store = Store(self.path, promo_codes=TEST_PROMOS)
+        self.assertEqual("DemoOne", self.store.get_promo(123))
         self.assertTrue(self.store.get_waiting_promo(123))
         self.assertTrue(self.store.has_accepted_terms(123))
         self.assertEqual(900, self.store.get_offset())
@@ -62,10 +67,84 @@ class StoreTests(unittest.TestCase):
         ))
 
     def test_invalid_promo_changes_nothing(self):
-        self.store.set_promo(123, "art")
+        self.store.set_promo(123, "demotwo")
         with self.assertRaises(StoreError):
             self.store.set_promo(123, "arbitrary")
-        self.assertEqual("Art", self.store.get_promo(123))
+        self.assertEqual("DemoTwo", self.store.get_promo(123))
+
+    def test_no_default_codes_and_error_does_not_reveal_configured_codes(self):
+        empty = Store(Path(self.temporary.name) / "empty.sqlite3")
+        try:
+            with self.assertRaises(StoreError) as error:
+                empty.set_promo(456, TEST_PROMOS[0])
+            self.assertEqual("invalid_promo", error.exception.key)
+            self.assertNotIn(TEST_PROMOS[0], str(error.exception))
+        finally:
+            empty.close()
+        with self.assertRaises(StoreError) as error:
+            self.store.set_promo(123, "not-a-code")
+        for code in TEST_PROMOS:
+            self.assertNotIn(code, str(error.exception))
+
+    def test_applied_discount_and_open_invoice_survive_removal_of_code(self):
+        self.store.set_promo(123, TEST_PROMOS[0])
+        pending = self.store.order_for(123, 123, now=100)
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(TEST_PROMOS[0], self.store.get_promo(123))
+        self.assertEqual(pending.id, self.store.order_for(123, 123, now=101).id)
+        self.assertEqual(84, self.store.get_order(pending.id).amount)
+        self.assertIsNone(self.store.validate_checkout(
+            pending.payload, 123, "XTR", 84, query_id="after-config-change", now=102
+        ))
+        self.store.accept_payment(pending.payload, 123, "XTR", 84, "retained-discount", now=103)
+        self.assertTrue(self.store.entitlement(123))
+
+    def test_language_defaults_to_uk_and_persists(self):
+        self.assertEqual("uk", self.store.get_language(123))
+        self.assertEqual("uk", self.store.get_language(999))
+        self.store.set_language(123, "ru")
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual("ru", self.store.get_language(123))
+        self.store.set_language(123, "uk")
+        self.assertEqual("uk", self.store.get_language(123))
+        with self.assertRaises(StoreError) as error:
+            self.store.set_language(123, "unsupported")
+        self.assertEqual("invalid_language", error.exception.key)
+        self.assertEqual("uk", self.store.get_language(123))
+
+    def test_language_migration_is_safe_with_simultaneous_connections(self):
+        legacy = Path(self.temporary.name) / "legacy.sqlite3"
+        with closing(sqlite3.connect(legacy)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE users(user_id INTEGER PRIMARY KEY, promo TEXT, "
+                "waiting_promo INTEGER NOT NULL DEFAULT 0, "
+                "accepted_terms INTEGER NOT NULL DEFAULT 0)"
+            )
+            connection.execute(
+                "INSERT INTO users(user_id,promo,waiting_promo,accepted_terms) VALUES (123,?,1,1)",
+                (TEST_PROMOS[1],),
+            )
+
+        def open_and_read(_):
+            store = Store(legacy)
+            try:
+                return (
+                    store.get_language(123),
+                    store.get_promo(123),
+                    store.get_waiting_promo(123),
+                    store.has_accepted_terms(123),
+                )
+            finally:
+                store.close()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(open_and_read, range(8)))
+        self.assertEqual([("uk", TEST_PROMOS[1], True, True)] * 8, results)
+        with closing(sqlite3.connect(legacy)) as connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(users)")]
+        self.assertEqual(1, columns.count("language"))
 
     def test_checkout_rejects_user_currency_and_amount(self):
         order = self.store.order_for(123, 123, now=100)
@@ -101,7 +180,7 @@ class StoreTests(unittest.TestCase):
 
     def test_approved_payment_can_arrive_after_expiry_and_promo_change(self):
         order = self.approved_order()
-        self.store.set_promo(123, "zeff")
+        self.store.set_promo(123, "demothree")
         self.store.accept_payment(order.payload, 123, "XTR", 99, "late-charge", now=3000)
         self.assertTrue(self.store.entitlement(123))
         self.assertEqual("paid", self.store.get_order(order.id).status)

@@ -1,6 +1,7 @@
 """Durable orders, Telegram payment receipts, and delivery progress."""
 
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -11,12 +12,21 @@ from pathlib import Path
 ADMIN_ID = 6662507956
 BASE_PRICE = 99
 PROMO_PRICE = 84
-PROMOS = {"chrome": "Chrome", "art": "Art", "zeff": "zeff"}
 ORDER_LIFETIME = 30 * 60
+LANGUAGES = {"uk", "ru"}
+CHECKOUT_ERRORS = {
+    "Рахунок належить іншому покупцю або не знайдений.": "invoice_owner",
+    "Валюта або сума рахунку не збігається.": "invoice_amount",
+    "Ти вже маєш доступ до Dash Client.": "already_owned",
+    "Рахунок уже обробляється або застарів. Створи новий через Оплата.": "invoice_expired",
+}
+_INITIALIZATION_LOCK = threading.Lock()
 
 
 class StoreError(Exception):
-    pass
+    def __init__(self, message, key=None):
+        super().__init__(message)
+        self.key = key
 
 
 @dataclass(frozen=True)
@@ -50,10 +60,21 @@ class Delivery:
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, promo_codes=()):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, timeout=2, isolation_level=None)
+        self.promo_codes = {
+            code.strip().casefold(): code.strip() for code in promo_codes if code.strip()
+        }
+        with _INITIALIZATION_LOCK:
+            self.db = sqlite3.connect(path, timeout=2, isolation_level=None)
+            try:
+                self._initialize()
+            except BaseException:
+                self.db.close()
+                raise
+
+    def _initialize(self):
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -64,7 +85,8 @@ class Store:
                 user_id INTEGER PRIMARY KEY,
                 promo TEXT,
                 waiting_promo INTEGER NOT NULL DEFAULT 0,
-                accepted_terms INTEGER NOT NULL DEFAULT 0
+                accepted_terms INTEGER NOT NULL DEFAULT 0,
+                language TEXT NOT NULL DEFAULT 'uk'
             );
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
@@ -104,6 +126,10 @@ class Store:
             );
             """
         )
+        with self._transaction():
+            columns = {column["name"] for column in self.db.execute("PRAGMA table_info(users)")}
+            if "language" not in columns:
+                self.db.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'uk'")
 
     def close(self):
         self.db.close()
@@ -158,9 +184,9 @@ class Store:
         return row["promo"] if row else None
 
     def set_promo(self, user_id, code):
-        canonical = PROMOS.get(code.strip().casefold())
+        canonical = self.promo_codes.get(code.strip().casefold())
         if canonical is None:
-            raise StoreError("Промокод не знайдено. Доступні Chrome, Art, zeff.")
+            raise StoreError("Промокод не знайдено.", key="invalid_promo")
         with self._transaction():
             self._user(user_id)
             self.db.execute(
@@ -172,6 +198,22 @@ class Store:
                 (user_id,),
             )
         return canonical
+
+    def get_language(self, user_id):
+        row = self.db.execute(
+            "SELECT language FROM users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        language = row["language"] if row else "uk"
+        return language if language in LANGUAGES else "uk"
+
+    def set_language(self, user_id, language):
+        if language not in LANGUAGES:
+            raise StoreError("Непідтримувана мова.", key="invalid_language")
+        with self._transaction():
+            self._user(user_id)
+            self.db.execute(
+                "UPDATE users SET language=? WHERE user_id=?", (language, user_id)
+            )
 
     def clear_promo(self, user_id):
         with self._transaction():
@@ -234,16 +276,22 @@ class Store:
         now = self._now(now)
         with self._transaction():
             if self.entitlement(user_id):
-                raise StoreError("Доступ уже придбано. Скористайся кнопкою отримання файлу.")
+                raise StoreError(
+                    "Доступ уже придбано. Скористайся кнопкою отримання файлу.",
+                    key="already_owned",
+                )
             if not self.has_accepted_terms(user_id):
-                raise StoreError("Спочатку прочитай і прийми умови покупки.")
+                raise StoreError("Спочатку прочитай і прийми умови покупки.", key="accept_terms")
             active = self.db.execute(
                 "SELECT id FROM orders WHERE user_id=? AND status='checkout' "
                 "AND expires_at>? LIMIT 1",
                 (user_id, now),
             ).fetchone()
             if active:
-                raise StoreError("Попередній платіж уже обробляється. Дочекайся результату.")
+                raise StoreError(
+                    "Попередній платіж уже обробляється. Дочекайся результату.",
+                    key="payment_pending",
+                )
             promo = self.get_promo(user_id)
             amount = PROMO_PRICE if promo else BASE_PRICE
             self.db.execute(
@@ -299,22 +347,33 @@ class Store:
     def accept_payment(self, payload, user_id, currency, amount, charge_id, now=None):
         now = self._now(now)
         if not isinstance(charge_id, str) or not charge_id.strip():
-            raise StoreError("У платежі немає ідентифікатора Telegram.")
+            raise StoreError("У платежі немає ідентифікатора Telegram.", key="missing_charge")
         with self._transaction():
             order = self.db.execute("SELECT * FROM orders WHERE payload=?", (payload,)).fetchone()
             if not order or order["user_id"] != user_id:
-                raise StoreError("Платіж не відповідає покупцю або рахунку.")
+                raise StoreError(
+                    "Платіж не відповідає покупцю або рахунку.", key="payment_owner"
+                )
             if currency != "XTR" or type(amount) is not int or amount != order["amount"]:
-                raise StoreError("Сума або валюта отриманого платежу не відповідає рахунку.")
+                raise StoreError(
+                    "Сума або валюта отриманого платежу не відповідає рахунку.",
+                    key="payment_amount",
+                )
             receipt = self.db.execute(
                 "SELECT * FROM payments WHERE charge_id=?", (charge_id,)
             ).fetchone()
             if receipt:
                 if receipt["order_id"] != order["id"]:
-                    raise StoreError("Ідентифікатор платежу вже пов'язаний з іншим рахунком.")
+                    raise StoreError(
+                        "Ідентифікатор платежу вже пов'язаний з іншим рахунком.",
+                        key="charge_reused",
+                    )
                 return PaymentResult(order["id"], True, self.entitlement(user_id), charge_id)
             if order["checkout_at"] is None:
-                raise StoreError("Платіж надійшов без підтвердженого pre-checkout.")
+                raise StoreError(
+                    "Платіж надійшов без підтвердженого pre-checkout.",
+                    key="checkout_missing",
+                )
             already_owned = self.entitlement(user_id)
             self.db.execute(
                 "INSERT INTO payments(charge_id,order_id,paid_at) VALUES (?,?,?)",
@@ -326,21 +385,23 @@ class Store:
 
     def grant_admin(self, user_id, chat_id):
         if user_id != ADMIN_ID:
-            raise StoreError("Безкоштовний доступ доступний тільки адміністратору.")
+            raise StoreError(
+                "Безкоштовний доступ доступний тільки адміністратору.", key="admin_only"
+            )
         with self._transaction():
             self._grant(user_id, chat_id, admin=True)
 
     def _refund_receipt(self, order_id, charge_id):
         order = self.get_order(order_id)
         if order is None:
-            raise StoreError("Рахунок не знайдено.")
+            raise StoreError("Рахунок не знайдено.", key="order_missing")
         charge_id = charge_id or order.charge_id
         receipt = self.db.execute(
             "SELECT * FROM payments WHERE order_id=? AND charge_id=?",
             (order_id, charge_id),
         ).fetchone()
         if receipt is None:
-            raise StoreError("Платіж рахунку не знайдено.")
+            raise StoreError("Платіж рахунку не знайдено.", key="charge_missing")
         self.db.execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge_id,))
         unpaid = self.db.execute(
             "SELECT 1 FROM payments WHERE order_id=? AND refunded=0", (order_id,)
@@ -366,11 +427,18 @@ class Store:
         with self._transaction():
             order = self.db.execute("SELECT * FROM orders WHERE payload=?", (payload,)).fetchone()
             if not order or order["user_id"] != user_id:
-                raise StoreError("Повернення не відповідає покупцю або рахунку.")
+                raise StoreError(
+                    "Повернення не відповідає покупцю або рахунку.", key="refund_owner"
+                )
             if currency != "XTR" or type(amount) is not int or amount != order["amount"]:
-                raise StoreError("Сума або валюта повернення не відповідає рахунку.")
+                raise StoreError(
+                    "Сума або валюта повернення не відповідає рахунку.",
+                    key="refund_amount",
+                )
             if not isinstance(charge_id, str) or not charge_id.strip():
-                raise StoreError("Повернення не містить ідентифікатора платежу.")
+                raise StoreError(
+                    "Повернення не містить ідентифікатора платежу.", key="missing_charge"
+                )
             self._refund_receipt(order["id"], charge_id)
             return order["id"]
 
@@ -422,4 +490,4 @@ class Store:
                 (chat_id, user_id),
             )
             if result.rowcount != 1:
-                raise StoreError("Спочатку придбай доступ до Dash Client.")
+                raise StoreError("Спочатку придбай доступ до Dash Client.", key="purchase_required")

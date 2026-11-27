@@ -32,9 +32,9 @@ class BotTests(unittest.TestCase):
         self.path = Path(self.temp.name)
         self.loader = self.path / "PythonLoaderDC.py"
         self.loader.write_text("print('test')", encoding="utf-8")
-        self.store = Store(self.path / "shop.sqlite3")
+        self.store = Store(self.path / "shop.sqlite3", promo_codes=("TEST15-CHECK",))
         self.api = FakeTelegram()
-        self.shop = Shop(self.api, self.store, self.loader, "HOW TO PLAY")
+        self.shop = Shop(self.api, self.store, self.loader, {"uk": "HOW TO PLAY", "ru": "Как играть"})
 
     def tearDown(self):
         self.store.close()
@@ -61,7 +61,7 @@ class BotTests(unittest.TestCase):
     def test_terms_before_invoice_and_discount_amount(self):
         self.shop.message(self.message("/pay"))
         self.assertFalse(any(name == "sendInvoice" for name, *_ in self.api.calls))
-        self.shop.message(self.message("/promo cHrOmE"))
+        self.shop.message(self.message('/promo "TeSt15-CheCk"'))
         self.shop.callback({
             "id": "button1", "from": {"id": 123}, "data": "agree",
             "message": {"chat": {"id": 123, "type": "private"}},
@@ -73,6 +73,45 @@ class BotTests(unittest.TestCase):
         self.assertTrue(invoice["start_parameter"])
         self.assertLessEqual(len(invoice["payload"].encode()), 128)
         self.assertFalse(self.store.entitlement(123))
+
+    def test_promo_responses_do_not_echo_codes(self):
+        for message in ("/start", "/promo", '/promo "WRONG-CODE"', '/promo "TEST15-CHECK"'):
+            self.shop.message(self.message(message))
+        replies = [params["text"] for name, params, _ in self.api.calls if name == "sendMessage"]
+        self.assertIn('/promo "код"', replies[1])
+        self.assertIn("84 XTR", replies[-1])
+        self.assertNotIn("TEST15-CHECK", "\n".join(replies))
+        self.assertNotIn("WRONG-CODE", "\n".join(replies))
+
+    def test_language_alias_switches_menu_invoice_and_delivery(self):
+        self.shop.message(self.message("/launguage"))
+        markup = self.api.calls[-1][1]["reply_markup"]
+        self.assertEqual(
+            [button["callback_data"] for button in markup["inline_keyboard"][0]],
+            ["language:uk", "language:ru"],
+        )
+        self.shop.callback({
+            "id": "language-button", "from": {"id": 123}, "data": "language:ru",
+            "message": {"chat": {"id": 123, "type": "private"}},
+        })
+        self.assertEqual(self.store.get_language(123), "ru")
+        self.assertEqual(self.store.get_language(321), "uk")
+        self.shop.message(self.message("🛒 Купить"))
+        self.assertIn("Получи файлы", self.api.calls[-1][1]["text"])
+        self.assertIn({"text": "🌐 Язык"}, self.api.calls[-1][1]["reply_markup"]["keyboard"][-1])
+        self.shop.message(self.message("/pay"))
+        self.assertIn("Оплата в Telegram Stars", self.api.calls[-1][1]["text"])
+        self.assertIn("Принимаю", self.api.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["text"])
+        self.shop.callback({
+            "id": "terms-button", "from": {"id": 123}, "data": "agree",
+            "message": {"chat": {"id": 123, "type": "private"}},
+        })
+        self.assertIn("бессрочная", self.api.calls[-1][1]["title"])
+        self.assertLessEqual(len(self.api.calls[-1][1]["title"]), 32)
+        self.paid_order()
+        self.shop.deliver(self.store.pending_deliveries()[0])
+        self.assertEqual(self.api.calls[-2][1]["caption"], "Твой лоадер Dash Client.")
+        self.assertEqual(self.api.calls[-1][1]["text"], "Как играть")
 
     def test_only_successful_payment_unlocks_delivery(self):
         order = self.paid_order()

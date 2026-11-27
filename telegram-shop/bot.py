@@ -15,48 +15,14 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from store import ADMIN_ID, BASE_PRICE, PROMO_PRICE, Store, StoreError
+from messages import LANGUAGE_PICKER, button_action, menu, translate
+from store import ADMIN_ID, BASE_PRICE, CHECKOUT_ERRORS, PROMO_PRICE, Store, StoreError
 
 
 ROOT = Path(__file__).resolve().parent
 LOGGER = logging.getLogger("dash_shop")
 BASE_STARS = BASE_PRICE
 PROMO_STARS = PROMO_PRICE
-MENU = {
-    "keyboard": [
-        [{"text": "🛒 Купити"}, {"text": "🎟 Промокод"}],
-        [{"text": "⭐ Оплата"}, {"text": "📥 Моя покупка"}],
-    ],
-    "resize_keyboard": True,
-    "is_persistent": True,
-}
-PRODUCT = (
-    "Dash Client — безстрокова копія\n\n"
-    "Python-лоадер і покрокова інструкція запуску.\n"
-    "Windows x64, Java 25, встановлений Minecraft Java 1.21.11.\n"
-    "Поточна збірка запускає одиночний режим.\n"
-    "RTX-профіль із лімітом 840 FPS.\n\n"
-    "Код і JAR у GitHub публічні. Покупка в цьому боті надає "
-    "безстрокову повторну видачу комплекту через бота."
-)
-TERMS = (
-    "Умови придбання\n\n"
-    "Ви отримуєте Python-лоадер Dash Client і текстову інструкцію. "
-    "Виданою копією можна користуватися без обмеження строку. "
-    "Повторне отримання через /download доступне, поки цей бот працює. "
-    "Майбутні версії та безстрокова робота сервісу не гарантуються.\n\n"
-    "Потрібні Windows x64, Java 25 та вже встановлений Minecraft Java 1.21.11. "
-    "Поточний комплект має одиночний профіль. Лоадер завантажує готовий JAR "
-    "і бібліотеки на ПК. Репозиторій і JAR публічні.\n\n"
-    "Ціна — 99 Telegram Stars (XTR). Промокоди Chrome, Art і zeff знижують "
-    "її на 15% із округленням до 84 XTR. Знижки не сумуються. "
-    "99 грн зі знижкою 15% — 84,15 грн; гривні та Stars мають різні ціни.\n\n"
-    "Для проблем з оплатою, доставкою або запиту повернення напишіть "
-    "/paysupport. Звернення отримує адміністратор магазину. "
-    "Telegram не здійснює підтримку цієї покупки.\n\n"
-    "Бот зберігає Telegram ID, промокод, замовлення та ідентифікатор платежу "
-    "для видачі покупки й обробки повернень."
-)
 
 
 class TelegramError(Exception):
@@ -175,47 +141,49 @@ class Shop:
             return 0
         return PROMO_STARS if self.store.get_promo(user_id) else BASE_STARS
 
-    def show_product(self, user_id, chat_id):
-        price = self.price(user_id)
+    def show_product(self, user_id, chat_id, language):
         if self.store.entitlement(user_id):
-            self.store.retry_delivery(user_id, chat_id)
-            self.say(chat_id, "Покупка вже доступна. Надсилаю комплект повторно.")
+            self.say(chat_id, translate(language, "already_owned"), menu(language))
             return
         self.say(
             chat_id,
-            PRODUCT + f"\n\nВаша ціна — {price} XTR.",
-            {"inline_keyboard": [
-                [{"text": "Умови придбання", "callback_data": "terms"}],
-                [{"text": "Перейти до оплати", "callback_data": "pay"}],
-            ]},
+            translate(language, "product", price=self.price(user_id)),
+            menu(language),
         )
 
-    def show_terms(self, chat_id):
-        self.say(chat_id, TERMS, {"inline_keyboard": [
-            [{"text": "Приймаю умови — продовжити", "callback_data": "agree"}],
+    def show_terms(self, chat_id, language):
+        terms = translate(language, "terms", base_price=BASE_STARS, promo_price=PROMO_STARS)
+        self.say(chat_id, terms, {"inline_keyboard": [
+            [{"text": translate(language, "agree"), "callback_data": "agree"}],
         ]})
 
-    def invoice(self, user_id, chat_id):
+    def show_languages(self, chat_id, language):
+        self.say(chat_id, translate(language, "choose_language"), LANGUAGE_PICKER)
+
+    def invoice(self, user_id, chat_id, language):
         if user_id == ADMIN_ID:
             self.store.grant_admin(user_id, chat_id)
-            self.say(chat_id, "Адміністратор — 0 XTR. Надсилаю комплект.")
+            self.say(chat_id, translate(language, "admin"))
             return
         if self.store.entitlement(user_id):
             self.store.retry_delivery(user_id, chat_id)
-            self.say(chat_id, "Покупка вже доступна. Повторна оплата не потрібна.")
+            self.say(chat_id, translate(language, "redelivery"))
             return
         if not self.store.has_accepted_terms(user_id):
-            self.show_terms(chat_id)
+            self.show_terms(chat_id, language)
             return
         try:
             order = self.store.order_for(user_id, chat_id)
         except StoreError as error:
-            self.say(chat_id, str(error))
+            if error.key == "accept_terms":
+                self.show_terms(chat_id, language)
+            else:
+                self.say(chat_id, translate(language, error.key or "payment_pending"))
             return
         self.api.call("sendInvoice", {
             "chat_id": chat_id,
-            "title": "Dash Client — безстрокова копія",
-            "description": f"Python-лоадер та інструкція. Одиночний профіль 1.21.11. Замовлення {order.id}.",
+            "title": translate(language, "invoice_title"),
+            "description": translate(language, "invoice_description", order=order.id),
             "payload": order.payload,
             "provider_token": "",
             "currency": "XTR",
@@ -224,16 +192,18 @@ class Shop:
         })
 
     def checkout(self, query):
+        user_id = query["from"]["id"]
         error = self.store.validate_checkout(
             query.get("invoice_payload", ""),
-            query["from"]["id"],
+            user_id,
             query.get("currency"),
             query.get("total_amount"),
             query_id=query["id"],
         )
         payload = {"pre_checkout_query_id": query["id"], "ok": error is None}
         if error:
-            payload["error_message"] = error
+            key = CHECKOUT_ERRORS.get(error, "invoice_owner")
+            payload["error_message"] = translate(self.store.get_language(user_id), key)
         self.api.call("answerPreCheckoutQuery", payload, timeout=3)
 
     def paid(self, message):
@@ -247,31 +217,31 @@ class Shop:
         )
         LOGGER.info("Confirmed order %s; duplicate event=%s", result.order_id, result.duplicate)
 
-    def promo(self, user_id, chat_id, code):
+    def promo(self, user_id, chat_id, code, language):
+        code = code.strip()
+        if len(code) >= 2 and code[0] in ('"', "'") and code[-1] == code[0]:
+            code = code[1:-1].strip()
         try:
-            canonical = self.store.set_promo(user_id, code)
+            self.store.set_promo(user_id, code)
         except StoreError:
-            self.say(chat_id, "Промокод не знайдено. Доступні Chrome, Art і zeff.")
+            self.say(chat_id, translate(language, "promo_invalid"))
             return
-        self.store.set_waiting_promo(user_id, False)
         self.say(
             chat_id,
-            f"Промокод {canonical} застосовано. Знижка 15%.\n"
-            f"99 грн → 84,15 грн. Ціна оплати в Telegram — {self.price(user_id)} XTR.\n"
-            "Натисніть «Оплата».",
-            MENU,
+            translate(language, "promo_applied", price=self.price(user_id)),
+            menu(language),
         )
 
-    def refund(self, user_id, chat_id, identifier):
+    def refund(self, user_id, chat_id, identifier, language):
         if user_id != ADMIN_ID:
-            self.say(chat_id, "Команда доступна адміністратору.")
+            self.say(chat_id, translate(language, "admin_only"))
             return
         order = self.store.get_order(identifier.strip())
         if order is None or not order.charge_id:
-            self.say(chat_id, "Не знайдено оплачене замовлення. Формат /refund ID_замовлення")
+            self.say(chat_id, translate(language, "refund_missing"))
             return
         if order.status == "refunded":
-            self.say(chat_id, f"Замовлення {order.id} вже повернено.")
+            self.say(chat_id, translate(language, "refund_already", order=order.id))
             return
         try:
             self.api.call("refundStarPayment", {
@@ -282,7 +252,7 @@ class Shop:
             if error.code != 400 or "CHARGE_ALREADY_REFUNDED" not in str(error):
                 raise
         self.store.mark_refunded(order.id, order.charge_id)
-        self.say(chat_id, f"Повернення за замовленням {order.id} підтверджено Telegram.")
+        self.say(chat_id, translate(language, "refund_done", order=order.id))
 
     def message(self, message):
         sender = message.get("from", {})
@@ -305,50 +275,55 @@ class Shop:
         if message.get("successful_payment"):
             self.paid(message)
             return
+        language = self.store.get_language(user_id)
         text = message.get("text", "").strip()
-        command, _, argument = text.partition(" ")
-        command = command.partition("@")[0].lower()
-        if command in ("/start", "/buy") or text == "🛒 Купити":
+        parts = text.split(maxsplit=1)
+        command = parts[0].partition("@")[0].casefold() if parts else ""
+        argument = parts[1] if len(parts) == 2 else ""
+        action = button_action(text)
+        if command in ("/start", "/buy") or action == "buy":
             self.store.set_waiting_promo(user_id, False)
-            self.say(chat_id, "Магазин Dash Client", MENU)
-            self.show_product(user_id, chat_id)
+            self.show_product(user_id, chat_id, language)
         elif command == "/terms":
-            self.show_terms(chat_id)
-        elif command == "/promo" or text == "🎟 Промокод":
+            self.show_terms(chat_id, language)
+        elif command in ("/language", "/launguage", "language", "launguage") or action == "language":
+            self.store.set_waiting_promo(user_id, False)
+            self.show_languages(chat_id, language)
+        elif command == "/promo" or action == "promo":
             if argument:
-                self.promo(user_id, chat_id, argument)
+                self.promo(user_id, chat_id, argument, language)
             else:
                 self.store.set_waiting_promo(user_id, True)
-                self.say(chat_id, "Надішліть промокод Chrome, Art або zeff. /cancel — скасувати.")
-        elif command in ("/pay",) or text == "⭐ Оплата":
+                self.say(chat_id, translate(language, "promo_hint"))
+        elif command == "/pay" or action == "pay":
             self.store.set_waiting_promo(user_id, False)
-            self.invoice(user_id, chat_id)
-        elif command == "/download" or text == "📥 Моя покупка":
+            self.invoice(user_id, chat_id, language)
+        elif command == "/download" or action == "download":
             self.store.set_waiting_promo(user_id, False)
             if user_id == ADMIN_ID:
                 self.store.grant_admin(user_id, chat_id)
             if self.store.entitlement(user_id):
                 self.store.retry_delivery(user_id, chat_id)
-                self.say(chat_id, "Надсилаю ваш комплект.")
+                self.say(chat_id, translate(language, "redelivery"))
             else:
-                self.say(chat_id, "Оплаченої покупки ще немає. Натисніть «Купити».", MENU)
+                self.say(chat_id, translate(language, "not_owned"), menu(language))
         elif command in ("/paysupport", "/support"):
             self.store.set_waiting_promo(user_id, False)
-            self.say(chat_id, "Підтримка магазину й запити повернення", {
+            self.say(chat_id, translate(language, "support"), {
                 "inline_keyboard": [[{
-                    "text": "Написати адміністратору",
+                    "text": translate(language, "contact_admin"),
                     "url": f"tg://user?id={ADMIN_ID}",
                 }]],
             })
         elif command == "/refund":
-            self.refund(user_id, chat_id, argument)
+            self.refund(user_id, chat_id, argument, language)
         elif command == "/cancel":
             self.store.set_waiting_promo(user_id, False)
-            self.say(chat_id, "Введення промокоду скасовано.", MENU)
+            self.say(chat_id, translate(language, "promo_cancelled"), menu(language))
         elif self.store.get_waiting_promo(user_id):
-            self.promo(user_id, chat_id, text)
+            self.promo(user_id, chat_id, text, language)
         else:
-            self.say(chat_id, "Скористайтеся кнопками магазину.", MENU)
+            self.say(chat_id, translate(language, "menu_hint"), menu(language))
 
     def callback(self, callback):
         message = callback.get("message", {})
@@ -358,12 +333,17 @@ class Shop:
         if chat.get("type") != "private" or user_id != chat.get("id"):
             return
         action = callback.get("data")
+        language = self.store.get_language(user_id)
         if action == "terms":
-            self.show_terms(chat["id"])
+            self.show_terms(chat["id"], language)
         elif action in ("agree", "pay"):
             if action == "agree":
                 self.store.accept_terms(user_id)
-            self.invoice(user_id, chat["id"])
+            self.invoice(user_id, chat["id"], language)
+        elif action in ("language:uk", "language:ru"):
+            language = action.split(":", 1)[1]
+            self.store.set_language(user_id, language)
+            self.say(chat["id"], translate(language, "language_changed"), menu(language))
 
     def update(self, update):
         if update.get("pre_checkout_query"):
@@ -376,14 +356,15 @@ class Shop:
     def deliver(self, delivery):
         if not self.store.entitlement(delivery.user_id):
             return
+        language = self.store.get_language(delivery.user_id)
         if not delivery.document_sent:
             self.api.call("sendDocument", {
                 "chat_id": delivery.chat_id,
-                "caption": "Ваш Python-лоадер Dash Client. Інструкція — у наступному повідомленні.",
+                "caption": translate(language, "delivery_caption"),
             }, file=("document", self.loader), timeout=30)
             self.store.mark_document_sent(delivery.user_id)
         if not delivery.instructions_sent:
-            self.say(delivery.chat_id, self.instructions)
+            self.say(delivery.chat_id, self.instructions[language])
             self.store.mark_instructions_sent(delivery.user_id)
 
 
@@ -405,8 +386,8 @@ def delivery_worker(api, database, loader, instructions, stop):
         store.close()
 
 
-def run(api, database, loader, instructions):
-    store = Store(database)
+def run(api, database, loader, instructions, promo_codes):
+    store = Store(database, promo_codes=promo_codes)
     stop = threading.Event()
     worker = None
     try:
@@ -477,15 +458,17 @@ def main():
     options = arguments.parse_args()
     load_env(ROOT / ".env")
     loader = ROOT / "delivery" / "PythonLoaderDC.py"
-    instruction_file = ROOT / "delivery" / "START.txt"
-    if not loader.is_file() or not instruction_file.is_file():
-        raise RuntimeError("Бракує delivery/PythonLoaderDC.py або delivery/START.txt.")
-    instructions = instruction_file.read_text(encoding="utf-8-sig").strip()
-    if not instructions or len(instructions) > 4096:
-        raise RuntimeError("Інструкція повинна містити від 1 до 4096 символів.")
+    if not loader.is_file():
+        raise RuntimeError("Бракує delivery/PythonLoaderDC.py.")
+    instructions = {}
+    for language, filename in (("uk", "START.txt"), ("ru", "START.ru.txt")):
+        instructions[language] = (ROOT / "delivery" / filename).read_text(encoding="utf-8-sig").strip()
+        if not 1 <= len(instructions[language]) <= 4096:
+            raise RuntimeError(f"{filename} повинна містити від 1 до 4096 символів.")
+    promo_codes = os.environ.get("PROMO_CODES", "").split(",")
     if options.check:
         compile(loader.read_text(encoding="utf-8-sig"), str(loader), "exec")
-        print(f"Файли готові. Ціна {BASE_STARS} XTR; промокоди {PROMO_STARS} XTR; адміністратор {ADMIN_ID}.")
+        print(f"Файли готові. Ціна {BASE_STARS} XTR, зі знижкою {PROMO_STARS} XTR.")
         return
     api = Telegram(os.environ.get("BOT_TOKEN"), os.environ.get("BOT_TEST_MODE") == "1")
     configured_db = os.environ.get("SHOP_DB")
@@ -494,7 +477,7 @@ def main():
         database = ROOT / database
     database = database.expanduser().resolve()
     with single_instance(database):
-        run(api, database, loader, instructions)
+        run(api, database, loader, instructions, promo_codes)
 
 
 if __name__ == "__main__":
