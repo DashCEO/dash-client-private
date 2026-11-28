@@ -75,13 +75,36 @@ class BotTests(unittest.TestCase):
         self.assertFalse(self.store.entitlement(123))
 
     def test_promo_responses_do_not_echo_codes(self):
-        for message in ("/start", "/promo", '/promo "WRONG-CODE"', '/promo "TEST15-CHECK"'):
+        for message in ("/start", '/promo "WRONG-CODE"', "/promo TEST15-CHECK"):
             self.shop.message(self.message(message))
         replies = [params["text"] for name, params, _ in self.api.calls if name == "sendMessage"]
-        self.assertIn('/promo "код"', replies[1])
+        self.assertIn("Промокод недійсний", replies[1])
         self.assertIn("84 XTR", replies[-1])
         self.assertNotIn("TEST15-CHECK", "\n".join(replies))
         self.assertNotIn("WRONG-CODE", "\n".join(replies))
+
+    def test_promo_hint_uses_the_selected_language(self):
+        expected_hints = {
+            "uk": "Щоб використати промокод скористайтесь командою /promo promocode",
+            "ru": "Чтобы использовать промокод, воспользуйтесь командой /promo promocode",
+        }
+        for language, hint in expected_hints.items():
+            self.store.set_language(123, language)
+            for text in ("🎟 Промокод", "/promo", '/promo "  "'):
+                with self.subTest(language=language, text=text):
+                    self.shop.message(self.message(text))
+                    self.assertEqual(self.api.calls[-1][1]["text"], hint)
+                    self.assertIsNone(self.store.get_promo(123))
+
+    def test_opening_promo_hint_does_not_capture_other_input(self):
+        self.shop.message(self.message("🎟 Промокод"))
+        self.shop.message(self.message("TEST15-CHECK"))
+        self.assertIsNone(self.store.get_promo(123))
+        self.assertEqual(self.api.calls[-1][1]["text"], "Обери дію в меню.")
+        self.shop.message(self.message("/cancel"))
+        self.assertIn("keyboard", self.api.calls[-1][1]["reply_markup"])
+        self.shop.message(self.message("⭐ Оплата"))
+        self.assertIn("Приймаю", self.api.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["text"])
 
     def test_language_alias_switches_menu_invoice_and_delivery(self):
         self.shop.message(self.message("/launguage"))

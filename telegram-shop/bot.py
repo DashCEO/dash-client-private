@@ -221,6 +221,9 @@ class Shop:
         code = code.strip()
         if len(code) >= 2 and code[0] in ('"', "'") and code[-1] == code[0]:
             code = code[1:-1].strip()
+        if not code:
+            self.say(chat_id, translate(language, "promo_hint"))
+            return
         try:
             self.store.set_promo(user_id, code)
         except StoreError:
@@ -275,31 +278,25 @@ class Shop:
         if message.get("successful_payment"):
             self.paid(message)
             return
-        language = self.store.get_language(user_id)
         text = message.get("text", "").strip()
+        if not text:
+            return
+        language = self.store.get_language(user_id)
         parts = text.split(maxsplit=1)
-        command = parts[0].partition("@")[0].casefold() if parts else ""
+        command = parts[0].partition("@")[0].casefold()
         argument = parts[1] if len(parts) == 2 else ""
         action = button_action(text)
         if command in ("/start", "/buy") or action == "buy":
-            self.store.set_waiting_promo(user_id, False)
             self.show_product(user_id, chat_id, language)
         elif command == "/terms":
             self.show_terms(chat_id, language)
         elif command in ("/language", "/launguage", "language", "launguage") or action == "language":
-            self.store.set_waiting_promo(user_id, False)
             self.show_languages(chat_id, language)
         elif command == "/promo" or action == "promo":
-            if argument:
-                self.promo(user_id, chat_id, argument, language)
-            else:
-                self.store.set_waiting_promo(user_id, True)
-                self.say(chat_id, translate(language, "promo_hint"))
+            self.promo(user_id, chat_id, argument if command == "/promo" else "", language)
         elif command == "/pay" or action == "pay":
-            self.store.set_waiting_promo(user_id, False)
             self.invoice(user_id, chat_id, language)
         elif command == "/download" or action == "download":
-            self.store.set_waiting_promo(user_id, False)
             if user_id == ADMIN_ID:
                 self.store.grant_admin(user_id, chat_id)
             if self.store.entitlement(user_id):
@@ -308,7 +305,6 @@ class Shop:
             else:
                 self.say(chat_id, translate(language, "not_owned"), menu(language))
         elif command in ("/paysupport", "/support"):
-            self.store.set_waiting_promo(user_id, False)
             self.say(chat_id, translate(language, "support"), {
                 "inline_keyboard": [[{
                     "text": translate(language, "contact_admin"),
@@ -317,11 +313,6 @@ class Shop:
             })
         elif command == "/refund":
             self.refund(user_id, chat_id, argument, language)
-        elif command == "/cancel":
-            self.store.set_waiting_promo(user_id, False)
-            self.say(chat_id, translate(language, "promo_cancelled"), menu(language))
-        elif self.store.get_waiting_promo(user_id):
-            self.promo(user_id, chat_id, text, language)
         else:
             self.say(chat_id, translate(language, "menu_hint"), menu(language))
 

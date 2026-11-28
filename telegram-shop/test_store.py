@@ -49,12 +49,10 @@ class StoreTests(unittest.TestCase):
     def test_promo_is_case_insensitive_and_survives_restart(self):
         old = self.store.order_for(123, 123, now=100)
         self.assertEqual("DemoOne", self.store.set_promo(123, " dEmOoNe "))
-        self.store.set_waiting_promo(123)
         self.store.set_offset(900)
         self.store.close()
         self.store = Store(self.path, promo_codes=TEST_PROMOS)
         self.assertEqual("DemoOne", self.store.get_promo(123))
-        self.assertTrue(self.store.get_waiting_promo(123))
         self.assertTrue(self.store.has_accepted_terms(123))
         self.assertEqual(900, self.store.get_offset())
         self.store.set_offset(899)
@@ -71,6 +69,15 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(StoreError):
             self.store.set_promo(123, "arbitrary")
         self.assertEqual("DemoTwo", self.store.get_promo(123))
+
+    def test_reapplying_the_same_promo_preserves_the_invoice(self):
+        self.store.set_promo(123, "demotwo")
+        order = self.store.order_for(123, 123, now=100)
+        self.store.set_promo(123, "DEMOtwo")
+        self.assertEqual(order.id, self.store.order_for(123, 123, now=101).id)
+        self.assertIsNone(self.store.validate_checkout(
+            order.payload, 123, "XTR", 84, query_id="same-promo", now=102
+        ))
 
     def test_no_default_codes_and_error_does_not_reveal_configured_codes(self):
         empty = Store(Path(self.temporary.name) / "empty.sqlite3")
@@ -133,7 +140,6 @@ class StoreTests(unittest.TestCase):
                 return (
                     store.get_language(123),
                     store.get_promo(123),
-                    store.get_waiting_promo(123),
                     store.has_accepted_terms(123),
                 )
             finally:
@@ -141,7 +147,7 @@ class StoreTests(unittest.TestCase):
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(open_and_read, range(8)))
-        self.assertEqual([("uk", TEST_PROMOS[1], True, True)] * 8, results)
+        self.assertEqual([("uk", TEST_PROMOS[1], True)] * 8, results)
         with closing(sqlite3.connect(legacy)) as connection:
             columns = [row[1] for row in connection.execute("PRAGMA table_info(users)")]
         self.assertEqual(1, columns.count("language"))

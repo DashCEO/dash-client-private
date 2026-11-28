@@ -18,7 +18,8 @@ CHECKOUT_ERRORS = {
     "Рахунок належить іншому покупцю або не знайдений.": "invoice_owner",
     "Валюта або сума рахунку не збігається.": "invoice_amount",
     "Ти вже маєш доступ до Dash Client.": "already_owned",
-    "Рахунок уже обробляється або застарів. Створи новий через Оплата.": "invoice_expired",
+    "Попередній платіж уже обробляється.": "payment_pending",
+    "Рахунок застарів.": "invoice_expired",
 }
 _INITIALIZATION_LOCK = threading.Lock()
 
@@ -189,14 +190,15 @@ class Store:
             raise StoreError("Промокод не знайдено.", key="invalid_promo")
         with self._transaction():
             self._user(user_id)
-            self.db.execute(
-                "UPDATE users SET promo=?, waiting_promo=0 WHERE user_id=?",
-                (canonical, user_id),
+            changed = self.db.execute(
+                "UPDATE users SET promo=?, waiting_promo=0 WHERE user_id=? AND promo IS NOT ?",
+                (canonical, user_id, canonical),
             )
-            self.db.execute(
-                "UPDATE orders SET status='superseded' WHERE user_id=? AND status='pending'",
-                (user_id,),
-            )
+            if changed.rowcount:
+                self.db.execute(
+                    "UPDATE orders SET status='superseded' WHERE user_id=? AND status='pending'",
+                    (user_id,),
+                )
         return canonical
 
     def get_language(self, user_id):
@@ -224,19 +226,6 @@ class Store:
             self.db.execute(
                 "UPDATE orders SET status='superseded' WHERE user_id=? AND status='pending'",
                 (user_id,),
-            )
-
-    def get_waiting_promo(self, user_id):
-        row = self.db.execute(
-            "SELECT waiting_promo FROM users WHERE user_id=?", (user_id,)
-        ).fetchone()
-        return bool(row and row["waiting_promo"])
-
-    def set_waiting_promo(self, user_id, waiting=True):
-        with self._transaction():
-            self._user(user_id)
-            self.db.execute(
-                "UPDATE users SET waiting_promo=? WHERE user_id=?", (int(waiting), user_id)
             )
 
     def has_accepted_terms(self, user_id):
@@ -326,10 +315,13 @@ class Store:
                 return "Валюта або сума рахунку не збігається."
             if self.entitlement(user_id):
                 return "Ти вже маєш доступ до Dash Client."
-            if order["status"] == "checkout" and query_id and order["checkout_id"] == query_id:
-                return None
+            if order["status"] == "checkout":
+                if query_id and order["checkout_id"] == query_id:
+                    return None
+                if order["expires_at"] > now:
+                    return "Попередній платіж уже обробляється."
             if order["status"] != "pending" or order["expires_at"] <= now:
-                return "Рахунок уже обробляється або застарів. Створи новий через Оплата."
+                return "Рахунок застарів."
             self.db.execute(
                 "UPDATE orders SET status='checkout',checkout_at=?,checkout_id=? WHERE id=?",
                 (now, query_id, order["id"]),
