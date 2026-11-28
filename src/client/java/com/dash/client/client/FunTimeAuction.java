@@ -19,6 +19,7 @@ import net.minecraft.world.item.component.ItemLore;
 
 public final class FunTimeAuction {
     private static final Pattern FORMATTING = Pattern.compile("(?i)§[0-9A-FK-ORX]");
+    private static final Pattern CONTROL_DECORATION = Pattern.compile("^[^\\p{L}]+|[^\\p{L}]+$");
     private static final Pattern PACK_SEARCH_TITLE = Pattern.compile(
             "^0A2z\\x{CFF98}\\d+/\\d+\\x{CFFAE}\\s+漢:\\s*\\S.*$");
     private static final Pattern PURCHASE_RECEIPT = Pattern.compile(
@@ -68,9 +69,27 @@ public final class FunTimeAuction {
                 || value.startsWith("auction") || value.startsWith("search");
     }
 
-    // The screen title arrives before the server fills its footer slots.
-    static boolean isPossibleAuctionTitle(String title) {
-        return isAuctionTitle(title) || PACK_SEARCH_TITLE.matcher(plain(title)).matches();
+    static boolean isAuctionPickerScreen(String title, ChestMenu menu) {
+        if (isConfirmationTitle(title)) return false;
+        if (isAuctionTitle(title)) return true;
+
+        // Resource packs can change the title glyphs and move the controls within the footer.
+        int size = menu.getContainer().getContainerSize();
+        if (size != 54) return false;
+        boolean refresh = false;
+        boolean storage = false;
+        boolean rental = false;
+        for (int slot = size - 9; slot < size; slot++) {
+            ItemStack item = menu.getSlot(slot).getItem();
+            if (!item.is(Items.PAPER)) continue;
+            String control = CONTROL_DECORATION.matcher(label(item.getHoverName().getString())).replaceAll("");
+            switch (control) {
+                case "обновить" -> refresh = true;
+                case "хранилище" -> storage = true;
+                case "аренда слотов" -> rental = true;
+            }
+        }
+        return refresh && storage && rental;
     }
 
     public static boolean isAuctionScreen(String title, ChestMenu menu) {

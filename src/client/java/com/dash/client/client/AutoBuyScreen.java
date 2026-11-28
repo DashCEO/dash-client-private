@@ -81,7 +81,6 @@ public final class AutoBuyScreen extends Screen {
             if (!(screen instanceof AbstractContainerScreen<?> container)
                     || !(container.getMenu() instanceof ChestMenu menu)) return;
             String title = screen.getTitle().getString();
-            if (!FunTimeAuction.isPossibleAuctionTitle(title)) return;
 
             Button pick = Button.builder(Component.literal(text("AutoBuy: з лота", "AutoBuy: из лота", "AutoBuy: from lot")),
                     button -> openAuctionPicker(client, menu, title))
@@ -94,7 +93,7 @@ public final class AutoBuyScreen extends Screen {
 
     private static boolean canPickAuctionLot(ChestMenu menu, String title) {
         return !SaveMode.isPaused() && !AutoBuy.isEnabled()
-                && FunTimeAuction.isAuctionScreen(title, menu);
+                && FunTimeAuction.isAuctionPickerScreen(title, menu);
     }
 
     private static void openAuctionPicker(Minecraft client, ChestMenu menu, String title) {
