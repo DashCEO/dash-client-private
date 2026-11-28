@@ -2,6 +2,7 @@ package com.dash.client.client;
 
 import java.math.BigDecimal;
 import java.text.Normalizer;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -9,10 +10,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.CustomData;
+import net.minecraft.world.item.component.ItemLore;
 
 public final class FunTimeAuction {
     private static final Pattern FORMATTING = Pattern.compile("(?i)§[0-9A-FK-ORX]");
@@ -26,10 +29,20 @@ public final class FunTimeAuction {
             "^[$₽⛃]?\\s*(\\d[\\d\\s,.]*?)(?:\\s*(k{1,2}|к{1,2}|тыс\\.?|тис\\.?|млн\\.?))?\\s*(?:[$₽⛃]|монет(?:а|и|ы)?|coins?)?$");
     private static final Pattern UNIT_PRICE = Pattern.compile(
             ".*(?:(?:цена|ціна|вартість)\\s+за\\s*(?:1\\s*(?:шт|ед|од)|штуку|единицу|одиницю)|price\\s+per\\s+(?:item|unit)).*");
+    private static final Pattern UNIT_PRICE_LINE = Pattern.compile(
+            "^[^\\p{L}\\d]*(?:(?:цена|ціна|вартість)\\s+за\\s*(?:1\\s*(?:шт|ед|од)\\.?|штуку|единицу|одиницю)"
+                    + "|price\\s+per\\s+(?:item|unit))[\\s:$»|]*(.*?)\\s*$");
+    private static final Pattern BUY_PROMPT = Pattern.compile(
+            "^[^\\p{L}\\d]*(?:нажмите,?\\s+чтобы\\s+купить|натисніть,?\\s+щоб\\s+купити|click\\s+to\\s+buy)[.!]?$");
+    private static final Pattern EXPIRY = Pattern.compile(
+            "^[^\\p{L}\\d]*(?:истекает|спливає|expires(?:\\s+in)?)\\s*:\\s*"
+                    + "(?:\\d+\\s*(?:д\\.|ч\\.|г\\.|год\\.|мин\\.|хв\\.|сек\\.|с\\.|[dhms])\\s*)+$");
 
     private FunTimeAuction() {}
 
     public record Lot(int slotIndex, ItemStack stack, long totalPrice, String seller) {}
+
+    private record AuctionTerms(long price, String seller, int priceLine, int amountLine, int sellerLine) {}
 
     public static String plain(String text) {
         return FORMATTING.matcher(Normalizer.normalize(text, Normalizer.Form.NFKC))
@@ -53,6 +66,11 @@ public final class FunTimeAuction {
         String value = label(title);
         return value.contains("аукцион") || value.startsWith("поиск")
                 || value.startsWith("auction") || value.startsWith("search");
+    }
+
+    // The screen title arrives before the server fills its footer slots.
+    static boolean isPossibleAuctionTitle(String title) {
+        return isAuctionTitle(title) || PACK_SEARCH_TITLE.matcher(plain(title)).matches();
     }
 
     public static boolean isAuctionScreen(String title, ChestMenu menu) {
@@ -111,21 +129,31 @@ public final class FunTimeAuction {
         if (stack.isEmpty() || stack.getCount() <= 0) return Optional.empty();
         var lore = stack.get(DataComponents.LORE);
         if (lore == null) return Optional.empty();
+        AuctionTerms terms = auctionTerms(lore.lines());
+        return terms == null ? Optional.empty() : Optional.of(new Lot(slot, stack.copy(), terms.price(), terms.seller()));
+    }
 
+    private static AuctionTerms auctionTerms(List<Component> lines) {
         Long price = null;
         String seller = "";
-        for (int index = 0; index < lore.lines().size(); index++) {
-            String raw = plain(lore.lines().get(index).getString());
-            if (UNIT_PRICE.matcher(label(raw)).matches()) continue;
-            Matcher priceLine = PRICE.matcher(label(raw));
+        int priceIndex = -1;
+        int amountIndex = -1;
+        int sellerIndex = -1;
+        for (int index = 0; index < lines.size(); index++) {
+            String raw = plain(lines.get(index).getString());
+            String normalized = label(raw);
+            if (UNIT_PRICE.matcher(normalized).matches()) continue;
+            Matcher priceLine = PRICE.matcher(normalized);
             if (priceLine.matches()) {
-                if (price != null) return Optional.empty();
+                if (price != null) return null;
+                priceIndex = index;
                 String amount = priceLine.group(1);
-                if (amount.isBlank() && index + 1 < lore.lines().size()) {
-                    amount = plain(lore.lines().get(++index).getString());
+                if (amount.isBlank() && index + 1 < lines.size()) {
+                    amount = plain(lines.get(++index).getString());
                 }
+                amountIndex = index;
                 OptionalLong parsed = parsePrice(amount);
-                if (parsed.isEmpty()) return Optional.empty();
+                if (parsed.isEmpty()) return null;
                 price = parsed.getAsLong();
             }
             // Keep the seller's actual spelling while normalizing only the label.
@@ -133,11 +161,12 @@ public final class FunTimeAuction {
             if (colon >= 0 && label(raw.substring(0, colon)).replaceAll("[^\\p{L}]", "")
                     .matches("продавец|продавець|seller")) {
                 String candidate = raw.substring(colon + 1).trim().replaceFirst("\\s*\\$\\s*$", "").trim();
-                if (!candidate.matches("[A-Za-z0-9_]{1,32}") || !seller.isEmpty()) return Optional.empty();
+                if (!candidate.matches("[A-Za-z0-9_]{1,32}") || !seller.isEmpty()) return null;
                 seller = candidate;
+                sellerIndex = index;
             }
         }
-        return price == null ? Optional.empty() : Optional.of(new Lot(slot, stack.copy(), price, seller));
+        return price == null ? null : new AuctionTerms(price, seller, priceIndex, amountIndex, sellerIndex);
     }
 
     public static OptionalLong parsePrice(String text) {
@@ -168,8 +197,16 @@ public final class FunTimeAuction {
     }
 
     public static ItemStack merchandise(ItemStack stack) {
+        return merchandise(stack, false);
+    }
+
+    static ItemStack merchandise(ItemStack stack, boolean preserveItemLore) {
         ItemStack result = stack.copy();
-        result.remove(DataComponents.LORE);
+        if (preserveItemLore) {
+            removeAuctionLore(result);
+        } else {
+            result.remove(DataComponents.LORE);
+        }
         CustomData customData = result.get(DataComponents.CUSTOM_DATA);
         if (customData != null && !customData.isEmpty()) {
             CompoundTag data = customData.copyTag();
@@ -183,5 +220,41 @@ public final class FunTimeAuction {
             });
         }
         return result;
+    }
+
+    private static void removeAuctionLore(ItemStack stack) {
+        ItemLore lore = stack.get(DataComponents.LORE);
+        if (lore == null || lore.lines().isEmpty()) return;
+        List<Component> lines = lore.lines();
+        AuctionTerms terms = auctionTerms(lines);
+        if (terms == null) return;
+
+        // Only a trailing block anchored by a valid total and seller or auction prompt
+        // can be removed. The original item text and its component styling stay intact.
+        int start = terms.priceLine();
+        int end = terms.amountLine() + 1;
+        while (start > 0 && isAuctionDecoration(lines, start - 1, terms.sellerLine())) start--;
+        while (end < lines.size() && isAuctionDecoration(lines, end, terms.sellerLine())) end++;
+        if (end != lines.size()) return;
+        if (terms.sellerLine() >= 0) {
+            if (terms.sellerLine() < start) return;
+        } else if (lines.subList(start, terms.priceLine()).stream()
+                .noneMatch(line -> BUY_PROMPT.matcher(label(line.getString())).matches())) {
+            return;
+        }
+
+        if (start == 0) {
+            stack.remove(DataComponents.LORE);
+        } else {
+            stack.set(DataComponents.LORE, new ItemLore(List.copyOf(lines.subList(0, start))));
+        }
+    }
+
+    private static boolean isAuctionDecoration(List<Component> lines, int index, int sellerLine) {
+        if (index == sellerLine) return true;
+        String value = label(lines.get(index).getString());
+        if (value.isBlank() || BUY_PROMPT.matcher(value).matches() || EXPIRY.matcher(value).matches()) return true;
+        Matcher unitPrice = UNIT_PRICE_LINE.matcher(value);
+        return unitPrice.matches() && parsePrice(unitPrice.group(1)).isPresent();
     }
 }

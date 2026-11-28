@@ -402,6 +402,7 @@ public class DashClientClient implements ClientModInitializer {
         HudSettings.load();
         DashAppearance.load();
         DashNicknameSetupScreen.register();
+        AutoBuyScreen.registerAuctionPicker();
         DashHudLayout.load();
         AutoBuySettings.load();
         Freelook.register();

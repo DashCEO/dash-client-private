@@ -10,7 +10,6 @@ import com.mojang.logging.LogUtils;
 import com.mojang.serialization.JsonOps;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.ItemStack;
@@ -55,7 +54,12 @@ public final class AutoBuySettings {
 
     public record Rule(String id, String itemId, String label, String stackJson,
                        long minPrice, long maxPrice, PriceMode priceMode,
-                       QuantityMode quantityMode, boolean enabled) {
+                       QuantityMode quantityMode, boolean enabled, boolean matchItemLore) {
+        public Rule(String id, String itemId, String label, String stackJson,
+                    long minPrice, long maxPrice, PriceMode priceMode, QuantityMode quantityMode, boolean enabled) {
+            this(id, itemId, label, stackJson, minPrice, maxPrice, priceMode, quantityMode, enabled, false);
+        }
+
         public Rule(String id, String itemId, String label, String stackJson,
                     long minPrice, long maxPrice, PriceMode priceMode, boolean enabled) {
             this(id, itemId, label, stackJson, minPrice, maxPrice, priceMode, QuantityMode.ANY, enabled);
@@ -68,6 +72,9 @@ public final class AutoBuySettings {
             }
             if (label == null || label.isBlank()) label = itemId;
             if (stackJson != null && stackJson.isBlank()) stackJson = null;
+            if (matchItemLore && stackJson == null) {
+                throw new IllegalArgumentException("Для точного правила потрібен зразок предмета.");
+            }
             if (minPrice < 0) {
                 throw new IllegalArgumentException("Мінімальна ціна має бути від 0.");
             }
@@ -182,14 +189,13 @@ public final class AutoBuySettings {
         if (exact) {
             Minecraft client = Minecraft.getInstance();
             if (client.level == null) throw new IllegalArgumentException("Додай предмет із руки після входу у світ.");
-            ItemStack template = stack.copy();
+            ItemStack template = FunTimeAuction.merchandise(stack, true);
             template.setCount(1);
-            template.remove(DataComponents.LORE);
             snapshot = ItemStack.CODEC.encodeStart(client.level.registryAccess().createSerializationContext(JsonOps.INSTANCE),
                     template).getOrThrow().toString();
         }
         return new Rule(UUID.randomUUID().toString(), BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(),
-                stack.getHoverName().getString(), snapshot, minPrice, maxPrice, mode, quantityMode, true);
+                stack.getHoverName().getString(), snapshot, minPrice, maxPrice, mode, quantityMode, true, exact);
     }
 
     private static void write(List<Rule> value) throws IOException {

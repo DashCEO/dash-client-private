@@ -180,10 +180,13 @@ public final class AutoBuy {
         ItemStack action = menu.getSlot(slot).getItem();
         if (!FunTimeAuction.isBuyAction(action.getHoverName().getString())) {
             var lot = FunTimeAuction.parseLot(slot, action);
-            if (slot != 0 || lot.isEmpty() || !samePurchase(purchase.lot, lot.get())) return;
+            if (slot != 0 || lot.isEmpty()
+                    || !samePurchase(purchase.lot, lot.get(), purchase.rule.matchItemLore())) return;
         }
         purchase.confirmed = true;
-        purchase.beforeCount = inventoryCount(client, FunTimeAuction.merchandise(purchase.lot.stack()));
+        boolean matchItemLore = purchase.rule.matchItemLore();
+        purchase.beforeCount = inventoryCount(client, FunTimeAuction.merchandise(purchase.lot.stack(), matchItemLore),
+                matchItemLore);
         long now = System.nanoTime();
         purchase.deadline = now + 5 * SECOND;
         lastClick = now;
@@ -291,13 +294,14 @@ public final class AutoBuy {
             if (now >= nextRefresh) refresh(client, menu, now);
             return;
         }
-        ItemStack merchandise = FunTimeAuction.merchandise(best.lot.stack());
-        if (!hasSpace(client, merchandise)) {
+        boolean matchItemLore = best.rule.matchItemLore();
+        ItemStack merchandise = FunTimeAuction.merchandise(best.lot.stack(), matchItemLore);
+        if (!hasSpace(client, merchandise, matchItemLore)) {
             stop("Звільни місце в інвентарі");
             return;
         }
         pending = new Purchase(best.rule, best.lot, menu, serverVersion,
-                inventoryCount(client, merchandise), now + 5 * SECOND);
+                inventoryCount(client, merchandise, matchItemLore), now + 5 * SECOND);
         status = "Перевіряю покупку · " + best.lot.totalPrice();
         click(client, menu, best.lot.slotIndex(), ClickAction.LISTING);
     }
@@ -308,10 +312,11 @@ public final class AutoBuy {
             stop("Правило змінено під час покупки");
             return;
         }
-        ItemStack expected = FunTimeAuction.merchandise(purchase.lot.stack());
+        boolean matchItemLore = purchase.rule.matchItemLore();
+        ItemStack expected = FunTimeAuction.merchandise(purchase.lot.stack(), matchItemLore);
         boolean mayHavePurchased = purchase.manualMenu == null || purchase.confirmed || purchase.serverSuccess;
         boolean delivered = mayHavePurchased
-                && inventoryCount(client, expected) >= purchase.beforeCount + expected.getCount();
+                && inventoryCount(client, expected, matchItemLore) >= purchase.beforeCount + expected.getCount();
         // Give the usual inventory update its full window before falling back to the receipt.
         if (delivered || purchase.receiptConfirmed && now >= purchase.deadline) {
             purchases++;
@@ -417,7 +422,7 @@ public final class AutoBuy {
                 preview = parsed.get();
             }
         }
-        if (preview == null || !samePurchase(purchase.lot, preview)
+        if (preview == null || !samePurchase(purchase.lot, preview, matchItemLore)
                 || !purchase.rule.quantityMode().matches(preview.stack())
                 || !withinRange(purchase.rule, preview.totalPrice(), preview.stack().getCount())) {
             awaitManualConfirmation(purchase, menu, "Не вдалося звірити предмет або ціну");
@@ -429,7 +434,7 @@ public final class AutoBuy {
             return;
         }
         purchase.confirmed = true;
-        if (purchase.manualMenu != null) purchase.beforeCount = inventoryCount(client, expected);
+        if (purchase.manualMenu != null) purchase.beforeCount = inventoryCount(client, expected, matchItemLore);
         purchase.deadline = now + 5 * SECOND;
         click(client, menu, confirm, ClickAction.CONFIRMATION);
     }
@@ -440,12 +445,12 @@ public final class AutoBuy {
         status = reason + " · Очікую ручне рішення";
     }
 
-    private static boolean samePurchase(FunTimeAuction.Lot first, FunTimeAuction.Lot second) {
+    private static boolean samePurchase(FunTimeAuction.Lot first, FunTimeAuction.Lot second, boolean matchItemLore) {
         return first.totalPrice() == second.totalPrice()
                 && first.stack().getCount() == second.stack().getCount()
                 && (second.seller().isEmpty() || first.seller().equalsIgnoreCase(second.seller()))
-                && ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(first.stack()),
-                FunTimeAuction.merchandise(second.stack()));
+                && ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(first.stack(), matchItemLore),
+                FunTimeAuction.merchandise(second.stack(), matchItemLore));
     }
 
     private static boolean isConfirmationScreen(Minecraft client) {
@@ -544,21 +549,25 @@ public final class AutoBuy {
                 .compareTo(BigInteger.valueOf(second.totalPrice()).multiply(BigInteger.valueOf(first.stack().getCount()))) < 0;
     }
 
-    private static int inventoryCount(Minecraft client, ItemStack expected) {
+    private static int inventoryCount(Minecraft client, ItemStack expected, boolean matchItemLore) {
         int count = 0;
         for (int slot = 0; slot < client.player.getInventory().getContainerSize(); slot++) {
             ItemStack stack = client.player.getInventory().getItem(slot);
-            if (ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(stack), expected)) count += stack.getCount();
+            if (ItemStack.isSameItem(stack, expected)
+                    && ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(stack, matchItemLore), expected)) {
+                count += stack.getCount();
+            }
         }
         return count;
     }
 
-    private static boolean hasSpace(Minecraft client, ItemStack expected) {
+    private static boolean hasSpace(Minecraft client, ItemStack expected, boolean matchItemLore) {
         int remaining = expected.getCount();
         for (int slot = 0; slot < 36; slot++) {
             ItemStack stack = client.player.getInventory().getItem(slot);
             if (stack.isEmpty()) remaining -= expected.getMaxStackSize();
-            else if (ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(stack), expected)) {
+            else if (ItemStack.isSameItem(stack, expected)
+                    && ItemStack.isSameItemSameComponents(FunTimeAuction.merchandise(stack, matchItemLore), expected)) {
                 remaining -= Math.max(0, stack.getMaxStackSize() - stack.getCount());
             }
             if (remaining <= 0) return true;
@@ -575,7 +584,7 @@ public final class AutoBuy {
                 ItemStack template = rule.stackJson() == null ? null : ItemStack.CODEC.parse(
                         client.level.registryAccess().createSerializationContext(JsonOps.INSTANCE),
                         JsonParser.parseString(rule.stackJson())).getOrThrow();
-                updated.add(new Matcher(rule, template == null ? null : FunTimeAuction.merchandise(template)));
+                updated.add(new Matcher(rule, template == null ? null : FunTimeAuction.merchandise(template, rule.matchItemLore())));
             } catch (RuntimeException exception) {
                 LOGGER.warn("Could not decode AutoBuy rule {}", rule.id(), exception);
             }
@@ -601,7 +610,8 @@ public final class AutoBuy {
     private record Matcher(AutoBuySettings.Rule rule, ItemStack template) {
         boolean matches(ItemStack stack) {
             if (!BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().equals(rule.itemId())) return false;
-            return template == null || ItemStack.isSameItemSameComponents(template, FunTimeAuction.merchandise(stack));
+            return template == null || ItemStack.isSameItemSameComponents(template,
+                    FunTimeAuction.merchandise(stack, rule.matchItemLore()));
         }
     }
 

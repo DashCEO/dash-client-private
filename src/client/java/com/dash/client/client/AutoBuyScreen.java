@@ -4,14 +4,18 @@ import static com.dash.client.client.DashLanguage.text;
 
 import com.google.gson.JsonParser;
 import com.mojang.serialization.JsonOps;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.item.ItemStack;
 
 import java.io.IOException;
@@ -47,6 +51,7 @@ public final class AutoBuyScreen extends Screen {
     private String itemId;
     private String itemLabel;
     private String stackJson;
+    private boolean matchItemLore;
     private ItemStack preview = ItemStack.EMPTY;
     private String minPriceDraft = "0";
     private String maxPriceDraft = "";
@@ -69,6 +74,45 @@ public final class AutoBuyScreen extends Screen {
         this.toggleModule = toggleModule;
         this.moduleStatus = moduleStatus;
         if (!AutoBuySettings.rules().isEmpty()) loadDraft(AutoBuySettings.rules().getFirst());
+    }
+
+    static void registerAuctionPicker() {
+        ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+            if (!(screen instanceof AbstractContainerScreen<?> container)
+                    || !(container.getMenu() instanceof ChestMenu menu)) return;
+            String title = screen.getTitle().getString();
+            if (!FunTimeAuction.isPossibleAuctionTitle(title)) return;
+
+            Button pick = Button.builder(Component.literal(text("AutoBuy: з лота", "AutoBuy: из лота", "AutoBuy: from lot")),
+                    button -> openAuctionPicker(client, menu, title))
+                    .bounds(scaledWidth - 127, 8, 119, 20).build();
+            pick.visible = canPickAuctionLot(menu, title);
+            Screens.getButtons(screen).add(pick);
+            ScreenEvents.afterTick(screen).register(openScreen -> pick.visible = canPickAuctionLot(menu, title));
+        });
+    }
+
+    private static boolean canPickAuctionLot(ChestMenu menu, String title) {
+        return !SaveMode.isPaused() && !AutoBuy.isEnabled()
+                && FunTimeAuction.isAuctionScreen(title, menu);
+    }
+
+    private static void openAuctionPicker(Minecraft client, ChestMenu menu, String title) {
+        if (client.player == null || client.level == null || client.player.containerMenu != menu
+                || !menu.getCarried().isEmpty() || !canPickAuctionLot(menu, title)) return;
+        List<ItemStack> samples = new ArrayList<>();
+        for (int index = 0; index < menu.getContainer().getContainerSize() - 9; index++) {
+            FunTimeAuction.parseLot(index, menu.getSlot(index).getItem())
+                    .filter(lot -> !lot.seller().isEmpty()).ifPresent(lot -> samples.add(lot.stack()));
+        }
+        if (samples.isEmpty()) {
+            client.gui.getChat().addMessage(Component.literal("[Dash AutoBuy] " + text(
+                    "Зачекай, поки з’являться лоти.", "Дождись появления лотов.", "Wait for auction listings to load.")));
+            return;
+        }
+        client.player.closeContainer();
+        AutoBuyScreen editor = new AutoBuyScreen(null, AutoBuy::isEnabled, AutoBuy::toggle, AutoBuy::status);
+        client.setScreen(new ItemPicker(editor, stack -> editor.selectItem(stack, true), samples));
     }
 
     @Override
@@ -215,13 +259,14 @@ public final class AutoBuyScreen extends Screen {
         graphics.drawCenteredString(font, (page + 1) + " / " + Math.max(1, (rules.size() + rows - 1) / rows),
                 left + listWidth / 2, top + panelHeight - 74, MUTED);
         if (itemId == null) {
-            String prompt = text("Додай предмет зі списку або з руки.", "Добавь предмет из списка или из руки.",
-                    "Choose an item from the list or use the held item.");
+            String prompt = text("Серверні предмети: /ah → AutoBuy: з лота.",
+                    "Предметы сервера: /ah → AutoBuy: из лота.", "Custom items: /ah → AutoBuy: from lot.");
             graphics.drawString(font, font.plainSubstrByWidth(prompt, contentWidth), contentX, top + 56, MUTED, false);
         } else {
             if (!preview.isEmpty()) graphics.renderItem(preview, contentX, top + 51);
             graphics.drawString(font, font.plainSubstrByWidth(itemLabel, contentWidth - 24), contentX + 23, top + 54, TEXT, false);
-            String detail = stackJson == null ? text("Тип предмета", "Тип предмета", "Item type")
+            String detail = matchItemLore ? text("Точний предмет і опис", "Точный предмет и описание", "Exact item and lore")
+                    : stackJson == null ? text("Тип предмета", "Тип предмета", "Item type")
                     : text("Точні властивості", "Точные свойства", "Exact properties");
             graphics.drawString(font, font.plainSubstrByWidth(detail, contentWidth), contentX, top + 75, MUTED, false);
         }
@@ -238,6 +283,7 @@ public final class AutoBuyScreen extends Screen {
         itemId = rule.itemId();
         itemLabel = rule.label();
         stackJson = rule.stackJson();
+        matchItemLore = rule.matchItemLore();
         minPriceDraft = Long.toString(rule.minPrice());
         maxPriceDraft = Long.toString(rule.maxPrice());
         mode = rule.priceMode();
@@ -269,7 +315,7 @@ public final class AutoBuyScreen extends Screen {
         try {
             AutoBuySettings.Rule rule = new AutoBuySettings.Rule(draftId, itemId, itemLabel, stackJson,
                     Long.parseLong(minPriceDraft.strip()), Long.parseLong(maxPriceDraft.strip()),
-                    mode, quantityMode, ruleEnabled);
+                    mode, quantityMode, ruleEnabled, matchItemLore);
             AutoBuySettings.put(rule);
             draftDirty = false;
             showNotice(text("Правило збережено. Від ", "Правило сохранено. От ", "Rule saved. From ") + NUMBERS.format(rule.minPrice())
@@ -380,6 +426,7 @@ public final class AutoBuyScreen extends Screen {
         private final AutoBuyScreen parent;
         private final Consumer<ItemStack> selected;
         private final List<ItemStack> items;
+        private final boolean auctionSamples;
         private final List<Button> itemButtons = new ArrayList<>();
         private List<ItemStack> matches = List.of();
         private String searchDraft = "";
@@ -393,10 +440,18 @@ public final class AutoBuyScreen extends Screen {
         private Button next;
 
         private ItemPicker(AutoBuyScreen parent, Consumer<ItemStack> selected) {
-            super(Component.literal(text("Вибір предмета", "Выбор предмета", "Choose an item")));
+            this(parent, selected, null);
+        }
+
+        private ItemPicker(AutoBuyScreen parent, Consumer<ItemStack> selected, List<ItemStack> samples) {
+            super(Component.literal(samples == null ? text("Вибір предмета", "Выбор предмета", "Choose an item")
+                    : text("Предмети поточної сторінки аукціону", "Предметы текущей страницы аукциона", "Items on this auction page")));
             this.parent = parent;
             this.selected = selected;
-            items = BuiltInRegistries.ITEM.stream().map(item -> item.getDefaultInstance())
+            auctionSamples = samples != null;
+            var source = auctionSamples ? samples.stream()
+                    : BuiltInRegistries.ITEM.stream().map(item -> item.getDefaultInstance());
+            items = source
                     .filter(stack -> !stack.isEmpty())
                     .sorted(Comparator.comparing(stack -> stack.getHoverName().getString(), String.CASE_INSENSITIVE_ORDER))
                     .toList();
@@ -439,7 +494,8 @@ public final class AutoBuyScreen extends Screen {
 
         private void updateMatches() {
             String search = searchDraft.strip().toLowerCase(Locale.ROOT);
-            matches = items.stream().filter(stack -> stack.getHoverName().getString().toLowerCase(Locale.ROOT).contains(search)
+            String searchName = FunTimeAuction.label(search);
+            matches = items.stream().filter(stack -> FunTimeAuction.label(stack.getHoverName().getString()).contains(searchName)
                     || BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().contains(search)).toList();
             updateButtons();
         }
@@ -480,6 +536,9 @@ public final class AutoBuyScreen extends Screen {
             for (int row = 0; row < itemButtons.size(); row++) {
                 ItemStack stack = matches.get(page * rows + row);
                 graphics.renderItem(stack, left + 17, top + 72 + row * 24);
+                if (auctionSamples && itemButtons.get(row).isHovered()) {
+                    graphics.setTooltipForNextFrame(font, stack, mouseX, mouseY);
+                }
             }
         }
 
